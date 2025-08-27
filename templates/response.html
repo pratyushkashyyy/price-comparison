@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>API Response Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-gray-50">
+    <div class="max-w-7xl mx-auto p-6">
+      <header class="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 class="text-2xl font-semibold text-gray-900">Product Details</h1>
+          <p class="text-sm text-gray-500 mt-1">Source: <span id="targetUrl" class="font-mono break-all"></span></p>
+        </div>
+        <div id="status" class="flex items-center gap-3">
+          <svg id="spinner" class="h-5 w-5 text-indigo-600 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+          </svg>
+          <span id="statusText" class="text-gray-700">Loading (can take ~1 minute)...</span>
+        </div>
+      </header>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <aside class="lg:col-span-5 bg-white rounded-xl border border-gray-200 p-4 shadow-sm" id="gallery">
+          <div class="aspect-square bg-gray-100 rounded-lg overflow-hidden relative">
+            <div id="gallerySkeleton" class="absolute inset-0 animate-pulse">
+              <div class="w-full h-full bg-gray-200"></div>
+            </div>
+            <div id="galleryMain" class="w-full h-full flex items-center justify-center text-gray-400">No images</div>
+          </div>
+          <div class="mt-3 grid grid-cols-6 gap-2" id="thumbs"></div>
+        </aside>
+
+        <section class="lg:col-span-7 flex flex-col gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm" id="headerCard">
+            <div id="headerSkeleton" class="animate-pulse">
+              <div class="h-6 bg-gray-200 rounded w-2/3"></div>
+              <div class="mt-3 h-5 bg-gray-200 rounded w-1/3"></div>
+            </div>
+            <div id="headerContent" class="hidden">
+              <h2 class="text-xl font-semibold text-gray-900" id="productName">Product Name</h2>
+              <div class="mt-2 flex items-center gap-3">
+                <span class="text-2xl font-bold text-gray-900" id="productPrice"></span>
+                <span class="text-sm text-gray-500" id="rating"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm" id="offers">
+            <h3 class="text-lg font-medium text-gray-800 mb-3">Best Offers</h3>
+            <div id="offersSkeleton" class="animate-pulse space-y-3">
+              <div class="h-5 bg-gray-200 rounded"></div>
+              <div class="h-5 bg-gray-200 rounded"></div>
+              <div class="h-5 bg-gray-200 rounded"></div>
+            </div>
+            <ul id="storeList" class="divide-y divide-gray-100 hidden"></ul>
+          </div>
+        </section>
+      </div>
+
+      <div class="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <section class="lg:col-span-7 bg-white rounded-xl border border-gray-200 p-5 shadow-sm" id="reviews">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-lg font-medium text-gray-800">Reviews</h3>
+            <span class="text-sm text-gray-500" id="reviewsMeta"></span>
+          </div>
+          <div id="reviewsSkeleton" class="animate-pulse space-y-3">
+            <div class="h-20 bg-gray-200 rounded"></div>
+            <div class="h-20 bg-gray-200 rounded"></div>
+            <div class="h-20 bg-gray-200 rounded"></div>
+          </div>
+          <div id="reviewCards" class="space-y-3 hidden"></div>
+        </section>
+
+        <aside class="lg:col-span-5 flex flex-col gap-6">
+          <section class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm" id="score">
+            <h3 class="text-lg font-medium text-gray-800 mb-3">Score</h3>
+            <div id="scoreSkeleton" class="animate-pulse">
+              <div class="h-8 bg-gray-200 rounded w-16"></div>
+              <div class="mt-3 space-y-2">
+                <div class="h-2 bg-gray-200 rounded"></div>
+                <div class="h-2 bg-gray-200 rounded"></div>
+                <div class="h-2 bg-gray-200 rounded"></div>
+              </div>
+            </div>
+            <div id="scoreValue" class="text-3xl font-bold text-indigo-600 hidden">–</div>
+            <div id="scoreBars" class="mt-4 space-y-2 hidden"></div>
+          </section>
+
+          <section class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm" id="specs">
+            <h3 class="text-lg font-medium text-gray-800 mb-3">Full Specs</h3>
+            <div id="specsSkeleton" class="animate-pulse grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div class="h-4 bg-gray-200 rounded"></div>
+              <div class="h-4 bg-gray-200 rounded"></div>
+              <div class="h-4 bg-gray-200 rounded"></div>
+              <div class="h-4 bg-gray-200 rounded"></div>
+            </div>
+            <dl id="specGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 hidden"></dl>
+          </section>
+
+          <section class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm" id="followups">
+            <h3 class="text-lg font-medium text-gray-800 mb-3">Ask more</h3>
+            <div id="followSkeleton" class="animate-pulse space-y-2">
+              <div class="h-4 bg-gray-200 rounded"></div>
+              <div class="h-4 bg-gray-200 rounded"></div>
+              <div class="h-4 bg-gray-200 rounded"></div>
+            </div>
+            <ul id="questions" class="list-disc pl-5 text-sm text-gray-700 hidden"></ul>
+          </section>
+        </aside>
+      </div>
+
+      <details class="mt-8 bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+        <summary class="cursor-pointer text-sm text-gray-600">Debug (raw + JSON)</summary>
+        <div class="mt-4">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="text-base font-medium text-gray-800">JSON</h2>
+            <button id="copyBtn" class="text-xs px-3 py-1.5 rounded-md bg-gray-800 text-white hover:bg-gray-700">Copy</button>
+          </div>
+          <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-auto shadow" id="json"><code class="whitespace-pre" id="jsonCode">{}</code></pre>
+          <h2 class="text-base font-medium text-gray-800 mt-4">Raw</h2>
+          <pre class="bg-white text-gray-800 p-4 rounded-lg border border-gray-200 overflow-auto shadow" id="raw"></pre>
+        </div>
+      </details>
+    </div>
+
+    <script>
+      const pageUrl = new URL(window.location.href);
+      const productUrl = pageUrl.searchParams.get('url') || '{{ url | default("") }}';
+      const target = document.getElementById('targetUrl');
+      const statusText = document.getElementById('statusText');
+      const spinner = document.getElementById('spinner');
+      const jsonEl = document.getElementById('jsonCode');
+      const rawEl = document.getElementById('raw');
+      const copyBtn = document.getElementById('copyBtn');
+
+      target.textContent = productUrl || '(missing)';
+
+      const apiUrl = new URL(window.location.origin + '/api');
+      if (productUrl) apiUrl.searchParams.set('url', productUrl);
+
+      function pretty(obj) {
+        try { return JSON.stringify(obj, null, 2); } catch { return String(obj); }
+      }
+
+      function el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text) e.textContent = text;
+        return e;
+      }
+
+      function renderGallery(images) {
+        const mainWrap = document.querySelector('#gallery > div');
+        const main = document.getElementById('galleryMain');
+        const skeleton = document.getElementById('gallerySkeleton');
+        const thumbs = document.getElementById('thumbs');
+        if (!Array.isArray(images) || images.length === 0) return;
+        skeleton.classList.add('hidden');
+        main.classList.remove('text-gray-400');
+        const img = new Image();
+        img.src = images[0];
+        img.alt = 'Product image';
+        img.className = 'w-full h-full object-contain';
+        main.innerHTML = '';
+        main.appendChild(img);
+        // Auto-scroll
+        let idx = 0;
+        setInterval(() => {
+          idx = (idx + 1) % images.length;
+          img.src = images[idx];
+        }, 4000);
+        thumbs.innerHTML = '';
+        images.slice(0, 12).forEach((src) => {
+          const b = el('button', 'aspect-square bg-gray-100 rounded-md overflow-hidden hover:ring-2 ring-indigo-500');
+          const t = new Image();
+          t.src = src; t.alt = 'thumb'; t.className = 'w-full h-full object-cover';
+          b.onclick = () => { img.src = src; };
+          b.appendChild(t);
+          thumbs.appendChild(b);
+        });
+      }
+
+      function renderHeader(header) {
+        if (!header) return;
+        document.getElementById('headerSkeleton').classList.add('hidden');
+        document.getElementById('headerContent').classList.remove('hidden');
+        const name = document.getElementById('productName');
+        const price = document.getElementById('productPrice');
+        const rating = document.getElementById('rating');
+        if (header.name) name.textContent = header.name;
+        if (header.price) price.textContent = header.price;
+        if (Array.isArray(header.stores) && header.stores.length > 0) {
+          const store = header.stores.find(s => s.totalPrice) || header.stores[0];
+          if (store && store.totalPrice && !price.textContent) price.textContent = store.totalPrice;
+        }
+        if (header.rating) rating.textContent = `Rating: ${header.rating}`;
+      }
+
+      function renderStores(stores) {
+        const ul = document.getElementById('storeList');
+        document.getElementById('offersSkeleton').classList.add('hidden');
+        ul.classList.remove('hidden');
+        ul.innerHTML = '';
+        (stores || []).slice(0, 10).forEach((s) => {
+          const li = el('li', 'py-3 flex items-start justify-between gap-4');
+          const left = el('div');
+          left.append(
+            el('div', 'font-medium text-gray-900', s.name || s.marketplace || 'Store'),
+            el('div', 'text-sm text-gray-600', s.detailsAndOffers?.map(o => o.text).filter(Boolean).join(' • ') || '')
+          );
+          const right = el('div', 'text-right');
+          right.append(
+            el('div', 'text-base font-semibold text-gray-900', s.totalPrice || s.basePrice || ''),
+            el('a', 'text-sm text-indigo-600 hover:underline', 'Open')
+          );
+          right.lastChild.href = s.directLink || s.link || '#';
+          li.append(left, right);
+          ul.appendChild(li);
+        });
+      }
+
+      function renderSpecs(sections) {
+        const dl = document.getElementById('specGrid');
+        document.getElementById('specsSkeleton').classList.add('hidden');
+        dl.classList.remove('hidden');
+        dl.innerHTML = '';
+        const specSection = (sections || []).find(s => s.type === 'SPECIFICATIONS');
+        const items = specSection?.details || [];
+        items.slice(0, 40).forEach(d => {
+          const dt = el('dt', 'text-sm text-gray-500', d.label || '');
+          const dd = el('dd', 'text-sm text-gray-900', d.value || '—');
+          dl.append(dt, dd);
+        });
+      }
+
+      function renderReviews(sections) {
+        const wrap = document.getElementById('reviewCards');
+        const meta = document.getElementById('reviewsMeta');
+        document.getElementById('reviewsSkeleton').classList.add('hidden');
+        wrap.classList.remove('hidden');
+        wrap.innerHTML = '';
+        const reviewsSec = (sections || []).find(s => s.type === 'REVIEWS');
+        if (!reviewsSec) return;
+        if (reviewsSec.reviewsCount) meta.textContent = `${reviewsSec.reviewsCount} reviews • ${reviewsSec.rating ?? ''}`;
+        const items = reviewsSec.detailedReviews || [];
+        items.slice(0, 8).forEach(r => {
+          const card = el('article', 'p-4 rounded-lg border border-gray-200 bg-white');
+          const title = el('h4', 'font-medium text-gray-900 mb-1', r.title || r.heading || 'Review');
+          const stars = el('div', 'text-amber-500 text-sm mb-2', r.starRating ? '★'.repeat(r.starRating) : '');
+          const content = el('p', 'text-sm text-gray-700', (r.content && typeof r.content === 'string' && !r.content.startsWith('$')) ? r.content : '');
+          card.append(title, stars, content);
+          wrap.appendChild(card);
+        });
+      }
+
+      function renderScore(widgets) {
+        const pick = (widgets || []).find(w => w.type === 'PICKED_REASONS');
+        if (!pick || !pick.scoreData) return;
+        const score = pick.scoreData;
+        document.getElementById('scoreSkeleton').classList.add('hidden');
+        const scoreVal = document.getElementById('scoreValue');
+        const bars = document.getElementById('scoreBars');
+        scoreVal.classList.remove('hidden');
+        bars.classList.remove('hidden');
+        scoreVal.textContent = score.score ?? '–';
+        bars.innerHTML = '';
+        (score.scoreBreakdown || []).forEach(b => {
+          const row = el('div');
+          row.append(el('div', 'text-sm text-gray-700 flex justify-between', `${b.label}`));
+          const track = el('div', 'h-2 bg-gray-200 rounded-full overflow-hidden mt-1');
+          const fill = el('div', 'h-2 bg-indigo-600', '');
+          fill.style.width = (Math.max(0, Math.min(100, Number(b.value) || 0))) + '%';
+          track.appendChild(fill);
+          row.appendChild(track);
+          bars.appendChild(row);
+        });
+      }
+
+      function extractFromWidgets(widgets) {
+        const result = { images: [], header: null, sections: [], stores: [] };
+        for (const w of widgets || []) {
+          if (w.type === 'IMAGE_CAROUSEL' && Array.isArray(w.images)) result.images = w.images;
+          if (w.type === 'PRODUCT_HEADER') {
+            result.header = { name: w.name, price: w.price, stores: w.stores, rating: w.rating };
+            result.stores = w.stores || [];
+          }
+          if (w.type === 'PRODUCT_DETAILS') {
+            result.sections = w.sections || [];
+          }
+        }
+        return result;
+      }
+
+      async function fetchData() {
+        if (!productUrl) {
+          statusText.textContent = "Missing required parameter 'url'";
+          spinner.classList.add('hidden');
+          return;
+        }
+        try {
+          const res = await fetch(apiUrl, { method: 'GET' });
+          const text = await res.text();
+          rawEl.textContent = text;
+          let data;
+          try { data = JSON.parse(text); } catch { data = { raw: text }; }
+          jsonEl.textContent = pretty(data);
+          // Render structured UI
+          const widgets = data?.productData?.widgets || [];
+          const { images, header, sections, stores } = extractFromWidgets(widgets);
+          renderGallery(images);
+          renderHeader(header);
+          renderStores(stores);
+          renderSpecs(sections);
+          renderReviews(sections);
+          renderScore(widgets);
+          if (!res.ok) {
+            statusText.textContent = `Error ${res.status}: ${res.statusText}`;
+            statusText.classList.add('text-red-700');
+          } else {
+            statusText.textContent = 'Done';
+            statusText.classList.add('text-green-700');
+          }
+        } catch (e) {
+          statusText.textContent = 'Network error: ' + e;
+          statusText.classList.add('text-red-700');
+        } finally {
+          spinner.classList.add('hidden');
+        }
+      }
+
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(jsonEl.textContent).then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => (copyBtn.textContent = 'Copy'), 1200);
+        });
+      });
+
+      fetchData();
+    </script>
+  </body>
+  </html>
+
+
