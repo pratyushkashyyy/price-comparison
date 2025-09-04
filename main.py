@@ -101,18 +101,22 @@ class JobQueueManager:
     
     def _execute_job(self, job_id, product_url):
         """Execute the actual job processing"""
+        print(f"🚀 Starting job execution for {job_id} with URL: {product_url}")
+        start_time = datetime.now()
+        
         db = SessionLocal()
         try:
             # Update job status to processing
             job = db.query(Job).filter(Job.job_id == job_id).first()
             if not job:
+                print(f"❌ Job {job_id} not found in database")
                 return
             
             job.status = JobStatus.PROCESSING.value
             db.commit()
+            print(f"📝 Job {job_id} status updated to PROCESSING")
             
-            print(f"Processing job {job_id}...")
-            
+            print(f"🔄 Calling product_details_api for {product_url}")
             # Process the product
             result, page_id = product_details_api(product_url)
             
@@ -123,22 +127,30 @@ class JobQueueManager:
             job.completed_at = datetime.now(pytz.timezone('Asia/Kolkata'))
             db.commit()
             
-            print(f"Job {job_id} completed successfully")
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            print(f"✅ Job {job_id} completed successfully in {duration:.2f} seconds")
+            print(f"📊 Result type: {type(result)}, Page ID: {page_id}")
             
         except Exception as e:
             # Update job with error
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
             if job:
                 job.status = JobStatus.FAILED.value
                 job.error = str(e)
                 job.completed_at = datetime.now(pytz.timezone('Asia/Kolkata'))
                 db.commit()
-            print(f"Job {job_id} failed: {e}")
+            print(f"❌ Job {job_id} failed after {duration:.2f} seconds: {e}")
+            import traceback
+            print(f"🔍 Full error traceback:\n{traceback.format_exc()}")
         finally:
             db.close()
             # Remove from running jobs
             with self.job_lock:
                 if job_id in self.running_jobs:
                     del self.running_jobs[job_id]
+                    print(f"🧹 Job {job_id} removed from running jobs")
     
     def get_queue_status(self):
         """Get current queue status"""
@@ -166,21 +178,46 @@ def add_cors_headers(response):
 
 
 def product_details_api(product_url):
+        print(f"🔗 Starting product_details_api for URL: {product_url}")
+        start_time = datetime.now()
+        
+        print(f"📱 Calling get_shortcode for: {product_url}")
+        shortcode_start = datetime.now()
         pageId = get_shortcode(product_url)
-        print("Page ID: ", pageId)
+        shortcode_duration = (datetime.now() - shortcode_start).total_seconds()
+        print(f"📱 get_shortcode completed in {shortcode_duration:.2f} seconds")
+        print(f"📱 Page ID: {pageId}")
+        
         try:
-            print(f"Checking readiness for product {pageId}")
+            print(f"🔍 Checking readiness for product {pageId}")
+            readiness_start = datetime.now()
             percentage = ready_check(pageId)
+            readiness_duration = (datetime.now() - readiness_start).total_seconds()
+            print(f"🔍 Initial readiness check completed in {readiness_duration:.2f} seconds: {percentage}%")
+            
             if percentage == 'No product detail steps found':
                 percentage = 100
+                print(f"🔍 No product detail steps found, setting percentage to 100%")
             else:
+                wait_count = 0
                 while percentage < 90:
-                    print(f"Waiting for product to load... {percentage}%")
+                    wait_count += 1
+                    print(f"⏳ Waiting for product to load... {percentage}% (attempt {wait_count})")
+                    readiness_start = datetime.now()
                     percentage = ready_check(pageId)
+                    readiness_duration = (datetime.now() - readiness_start).total_seconds()
+                    print(f"⏳ Readiness check {wait_count} completed in {readiness_duration:.2f} seconds: {percentage}%")
                     sleep(1)
+                    
+                    # Add timeout protection
+                    if wait_count > 30:  # 30 second timeout
+                        print(f"⏰ Timeout reached after {wait_count} attempts, proceeding with current percentage: {percentage}%")
+                        break
         except Exception as e:
+                print(f"❌ Error during readiness check: {e}")
                 return {'error': f'Failed to check readiness attempts: {str(e)}'}
         if pageId:
+            print(f"📊 Processing product with pageId: {pageId}")
             product_details = get_details_product(pageId)
             try:
                 short_code = pageId
@@ -216,6 +253,9 @@ def product_details_api(product_url):
             except Exception as e:
                     print(f"❌ Database operation failed: {e}")
             return product_details, pageId
+        else:
+            print(f"❌ No pageId extracted from URL: {product_url}")
+            return {'error': f'Could not extract pageId from URL. The URL might not be a valid product URL or Flash.co could not process it.'}, None
 
 @app.route("/view", methods=["GET"]) 
 def view():
