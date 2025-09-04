@@ -28,7 +28,7 @@ def ready_check(pageId):
     }
 
     try:
-        response = requests.get('https://apiv3.flash.tech/agents/product-detail-steps', params=params, headers=headers)
+        response = requests.get('https://apiv3.flash.tech/agents/product-detail-steps', params=params, headers=headers, timeout=180)
         response.raise_for_status()
         
         response_data = response.json()

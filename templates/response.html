@@ -257,7 +257,15 @@
       }
 
       function renderScore(widgets) {
-        const pick = (widgets || []).find(w => w.type === 'PICKED_REASONS');
+        // Look for PICKED_REASONS in both top-level widgets and sections
+        let pick = (widgets || []).find(w => w.type === 'PICKED_REASONS');
+        if (!pick) {
+          // Look in PRODUCT_DETAILS sections
+          const productDetails = (widgets || []).find(w => w.type === 'PRODUCT_DETAILS');
+          if (productDetails && productDetails.sections) {
+            pick = productDetails.sections.find(s => s.type === 'PICKED_REASONS');
+          }
+        }
         if (!pick || !pick.scoreData) return;
         const score = pick.scoreData;
         document.getElementById('scoreSkeleton').classList.add('hidden');
@@ -308,7 +316,7 @@
           try { data = JSON.parse(text); } catch { data = { raw: text }; }
           jsonEl.textContent = pretty(data);
           // Render structured UI
-          const widgets = data?.productData?.widgets || [];
+          const widgets = data?.initialData?.widgets || data?.productData?.widgets || [];
           const { images, header, sections, stores } = extractFromWidgets(widgets);
           renderGallery(images);
           renderHeader(header);

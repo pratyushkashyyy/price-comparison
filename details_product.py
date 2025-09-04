@@ -43,21 +43,48 @@ def get_details_product(pageId):
     response = requests.get('https://webapp.flash.co/product-details', params=params, cookies=cookies, headers=headers)
     data = response.text
     
-    script_pattern = r'self\.__next_f\.push\(\[1,"5:(.*?)"\]\)'
-    script_matches = re.findall(script_pattern, data, re.DOTALL)
+    patterns_to_try = [
+        r'self\.__next_f\.push\(\[1,"5:(.*?)"\]\)',
+        r'self\.__next_f\.push\(\[1,"7:(.*?)"\]\)',
+        r'self\.__next_f\.push\(\[1,"[0-9]+:(.*?)"\]\)',
+    ]
     
+    script_matches = []
+    used_pattern = None
+    
+    for pattern in patterns_to_try:
+        matches = re.findall(pattern, data, re.DOTALL)
+        if matches:
+            script_matches = matches
+            used_pattern = pattern
+            break
     if script_matches:
         script_content = script_matches[0]
+        
         cleaned = script_content.replace('\\"', '"')
         cleaned = cleaned.replace('\\n', '\n')
         cleaned = cleaned.replace('\\t', '\t')
         cleaned = cleaned.replace('\\r', '\r')
         cleaned = cleaned.replace('\\\\', '\\')
+    
+        json_starts = [
+            '{"productId":',
+            '{"initialData":',
+            '{"widgets":',
+            '{"stores":',
+            '{"metadata":'
+        ]
         
-        json_start = cleaned.find('{"productId":')
+        json_start = -1
+        for start_pattern in json_starts:
+            json_start = cleaned.find(start_pattern)
+            if json_start != -1:
+                break
+        
         if json_start != -1:
             brace_count = 0
             json_end = json_start
+            
             for i, char in enumerate(cleaned[json_start:], json_start):
                 if char == '{':
                     brace_count += 1
@@ -86,6 +113,7 @@ def get_details_product(pageId):
                         try:
                             product_id_match = re.search(r'"productId":"([^"]+)"', json_str)
                             product_id = product_id_match.group(1) if product_id_match else "unknown"
+                            
                             return json.dumps({
                                 "productId": product_id,
                                 "status": "partial_parse",
@@ -102,6 +130,7 @@ def get_details_product(pageId):
     else:
         return json.dumps({"error": "No script content found in response"}, indent=2)
 
+
 def clean_unicode_text(text: str) -> str:
     if not text or text == 'N/A':
         return text
@@ -116,5 +145,5 @@ def clean_unicode_text(text: str) -> str:
         return text
 
 if __name__ == "__main__":    
-    single_result = get_details_product("pnjQjCYb")
+    single_result = get_details_product("8eaAF5b2")
     print(single_result)

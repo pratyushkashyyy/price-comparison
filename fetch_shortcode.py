@@ -52,7 +52,7 @@ def get_shortcode(url):
             if "product-details" in current_url:
                 product_url = current_url
                 break
-            page.wait_for_timeout(500)
+            
         
         context.close()
         browser.close()
@@ -61,7 +61,7 @@ def get_shortcode(url):
             if 'pageId=' in final_url:
                 pageId = final_url.split('pageId=')[-1]
 
-        print(f"New Url: {product_url}")
+        print(f"New pageId: {pageId}")
         return(pageId)
 
 if __name__ == "__main__":
