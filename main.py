@@ -12,9 +12,24 @@ import uuid
 import queue
 from enum import Enum
 
-
 app = Flask(__name__)
 
+def send_completion_webhook(page_id, product_url):
+    """Send webhook notification when a job is completed"""
+    webhook_url = "https://appdeals.in/webhook/flash-data"
+    payload = {
+        "pageId": page_id,
+        "productUrl": product_url
+    }
+    
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        response.raise_for_status()
+        print(f"✅ Webhook sent successfully for pageId: {page_id}")
+        return True
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Failed to send webhook for pageId {page_id}: {e}")
+        return False
 
 class JobStatus(Enum):
     PENDING = "pending"
@@ -25,9 +40,10 @@ class JobStatus(Enum):
 
 
 class JobQueueManager:
-    def __init__(self, max_concurrent_jobs=1):
+    def __init__(self, max_concurrent_jobs=1, max_queue_size=100):
         self.max_concurrent_jobs = max_concurrent_jobs
-        self.job_queue = queue.Queue()
+        self.max_queue_size = max_queue_size
+        self.job_queue = queue.Queue(maxsize=max_queue_size)
         self.running_jobs = {}
         self.job_lock = threading.Lock()
         self.worker_thread = None
@@ -48,9 +64,30 @@ class JobQueueManager:
             self.worker_thread.join()
         print("Job queue manager stopped")
     
-    def add_job(self, job_id, product_url):
-        """Add a job to the queue"""
+    def check_duplicate_job(self, product_url):
+        """Check if there's already a pending or queued job for the same product URL"""
+        db = SessionLocal()
+        try:
+            existing_job = db.query(Job).filter(
+                Job.product_url == product_url,
+                Job.status.in_([JobStatus.PENDING.value, JobStatus.QUEUED.value, JobStatus.PROCESSING.value])
+            ).first()
+            return existing_job
+        finally:
+            db.close()
+    
+    def add_job_simple(self, job_id, product_url):
+        """Add a job to the queue without deduplication check (for internal use)"""
         with self.job_lock:
+            # Check if queue is full
+            if self.job_queue.qsize() >= self.max_queue_size:
+                print(f"❌ Queue is full (max size: {self.max_queue_size}). Cannot add job {job_id}")
+                return {
+                    "success": False,
+                    "queue_full": True,
+                    "message": f"Queue is full (max size: {self.max_queue_size})"
+                }
+            
             # Update job status to queued
             db = SessionLocal()
             try:
@@ -62,28 +99,61 @@ class JobQueueManager:
                 db.close()
             
             # Add to queue
-            self.job_queue.put((job_id, product_url))
-            print(f"Job {job_id} added to queue. Queue size: {self.job_queue.qsize()}")
+            try:
+                self.job_queue.put_nowait((job_id, product_url))
+                print(f"Job {job_id} added to queue. Queue size: {self.job_queue.qsize()}")
+                return {
+                    "success": True,
+                    "queue_position": self.job_queue.qsize(),
+                    "message": "Job added to queue successfully"
+                }
+            except queue.Full:
+                print(f"❌ Queue is full. Cannot add job {job_id}")
+                return {
+                    "success": False,
+                    "queue_full": True,
+                    "message": "Queue is full"
+                }
+    
+    def add_job(self, job_id, product_url):
+        """Add a job to the queue with deduplication"""
+        with self.job_lock:
+            # Check for duplicate jobs first
+            existing_job = self.check_duplicate_job(product_url)
+            if existing_job:
+                print(f"🔄 Duplicate job detected for URL: {product_url}")
+                print(f"   Existing job ID: {existing_job.job_id}, Status: {existing_job.status}")
+                return {
+                    "success": False,
+                    "duplicate": True,
+                    "existing_job_id": existing_job.job_id,
+                    "existing_status": existing_job.status,
+                    "message": "A job for this URL is already pending, queued, or processing"
+                }
+            
+            # Use the simple add method
+            return self.add_job_simple(job_id, product_url)
     
     def _worker_loop(self):
         """Main worker loop that processes jobs from the queue"""
         while self.is_running:
             try:
-                # Wait for a job with timeout to allow checking is_running
                 job_id, product_url = self.job_queue.get(timeout=1)
                 
-                # Check if we can start this job (respect max concurrent limit)
                 if len(self.running_jobs) >= self.max_concurrent_jobs:
-                    # Put job back in queue and wait
                     self.job_queue.put((job_id, product_url))
                     sleep(1)
                     continue
                 
-                # Start processing the job
                 self._process_job(job_id, product_url)
                 
+                # Wait for the job to complete before processing the next one
+                if job_id in self.running_jobs:
+                    self.running_jobs[job_id].join()
+                    print(f"⏳ Job {job_id} completed. Waiting 30 seconds before processing next job...")
+                    sleep(30)  # Wait 30 seconds after each job completes
+                
             except queue.Empty:
-                # No jobs in queue, continue loop
                 continue
             except Exception as e:
                 print(f"Error in worker loop: {e}")
@@ -106,10 +176,36 @@ class JobQueueManager:
         
         db = SessionLocal()
         try:
-            # Update job status to processing
             job = db.query(Job).filter(Job.job_id == job_id).first()
             if not job:
                 print(f"❌ Job {job_id} not found in database")
+                return
+            
+            indian_tz = pytz.timezone('Asia/Kolkata')
+            one_day_ago = datetime.now(indian_tz) - timedelta(days=1)
+            existing_product = db.query(Product).filter(
+                Product.productUrl == product_url, 
+                Product.timestamp >= one_day_ago
+            ).first()
+            
+            if existing_product:
+                print(f"📋 Product already exists in database (within 1 day) - Page ID: {existing_product.shortCode}")
+                result = get_details_product(existing_product.shortCode)
+                page_id = existing_product.shortCode
+                
+                job.status = JobStatus.COMPLETED.value
+                job.result = result
+                job.page_id = page_id
+                job.completed_at = datetime.now(pytz.timezone('Asia/Kolkata'))
+                db.commit()
+                
+                # Send webhook notification
+                send_completion_webhook(page_id, product_url)
+                
+                end_time = datetime.now()
+                duration = (end_time - start_time).total_seconds()
+                print(f"✅ Job {job_id} completed successfully using existing product in {duration:.2f} seconds")
+                print(f"📊 Result type: {type(result)}, Page ID: {page_id}")
                 return
             
             job.status = JobStatus.PROCESSING.value
@@ -117,15 +213,16 @@ class JobQueueManager:
             print(f"📝 Job {job_id} status updated to PROCESSING")
             
             print(f"🔄 Calling product_details_api for {product_url}")
-            # Process the product
             result, page_id = product_details_api(product_url)
             
-            # Update job with result
             job.status = JobStatus.COMPLETED.value
             job.result = result
             job.page_id = page_id
             job.completed_at = datetime.now(pytz.timezone('Asia/Kolkata'))
             db.commit()
+            
+            # Send webhook notification
+            send_completion_webhook(page_id, product_url)
             
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
@@ -133,7 +230,6 @@ class JobQueueManager:
             print(f"📊 Result type: {type(result)}, Page ID: {page_id}")
             
         except Exception as e:
-            # Update job with error
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
             if job:
@@ -146,7 +242,6 @@ class JobQueueManager:
             print(f"🔍 Full error traceback:\n{traceback.format_exc()}")
         finally:
             db.close()
-            # Remove from running jobs
             with self.job_lock:
                 if job_id in self.running_jobs:
                     del self.running_jobs[job_id]
@@ -157,17 +252,14 @@ class JobQueueManager:
         with self.job_lock:
             return {
                 "queue_size": self.job_queue.qsize(),
+                "max_queue_size": self.max_queue_size,
                 "running_jobs": len(self.running_jobs),
                 "max_concurrent": self.max_concurrent_jobs,
-                "running_job_ids": list(self.running_jobs.keys())
+                "running_job_ids": list(self.running_jobs.keys()),
+                "queue_utilization": f"{(self.job_queue.qsize() / self.max_queue_size) * 100:.1f}%"
             }
 
-
-# Initialize the job queue manager
-job_queue_manager = JobQueueManager(max_concurrent_jobs=1)
-
-
-
+job_queue_manager = JobQueueManager(max_concurrent_jobs=1, max_queue_size=100)
 
 @app.after_request
 def add_cors_headers(response):
@@ -175,7 +267,6 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     return response
-
 
 def product_details_api(product_url):
         print(f"🔗 Starting product_details_api for URL: {product_url}")
@@ -209,8 +300,7 @@ def product_details_api(product_url):
                     print(f"⏳ Readiness check {wait_count} completed in {readiness_duration:.2f} seconds: {percentage}%")
                     sleep(1)
                     
-                    # Add timeout protection
-                    if wait_count > 30:  # 30 second timeout
+                    if wait_count > 60:
                         print(f"⏰ Timeout reached after {wait_count} attempts, proceeding with current percentage: {percentage}%")
                         break
         except Exception as e:
@@ -226,16 +316,13 @@ def product_details_api(product_url):
                     indian_tz = pytz.timezone('Asia/Kolkata')
                     timestamp = datetime.now(indian_tz)
                     
-                    # Check if product exists and update it
                     existing_product = db.query(Product).filter(Product.productUrl == product_url).first()
                     if existing_product:
-                        # Update existing product
                         existing_product.shortCode = short_code
                         existing_product.timestamp = timestamp
                         db.commit()
                         print(f"Product updated: ID={existing_product.id}, Code={short_code}")
                     else:
-                        # Create new product if it doesn't exist
                         product = Product(
                             productUrl=product_url,
                             shortCode=short_code,
@@ -268,36 +355,43 @@ def view():
 def api():
     productUrl = request.args.get("url")
     updater = request.args.get("updater")
-    use_job = request.args.get("job", "false").lower() == "true"
+    use_job = request.args.get("job", "true").lower() == "true"
     
     if not productUrl:
-        return jsonify({"error": "Missing required parameter 'productUrl'"}), 400
+        return jsonify({"error": "Missing required parameter 'url'"}), 400
     
     db = SessionLocal()
-    try:
-        indian_tz = pytz.timezone('Asia/Kolkata')
-        one_day_ago = datetime.now(indian_tz) - timedelta(days=1)
-        existing_product = db.query(Product).filter(
-            Product.productUrl == productUrl, 
-            Product.timestamp >= one_day_ago
-        ).first()
-        
-        if existing_product:
-            print("Product already exists in database (within 1 day)")
-            pageId = existing_product.shortCode
-            result = get_details_product(pageId)
-            if isinstance(result, str):
-                try:
-                    result = clean_unicode_text(json.loads(result))
-                except json.JSONDecodeError:
-                    pass
-            
-            if updater == "true":
-                return jsonify({"pageid": pageId}), 200
-            return jsonify(result), 200
-        
-        # If using job system, create job and add to queue
+    try:      
         if use_job:
+            # Check if product already exists within the last day
+            indian_tz = pytz.timezone('Asia/Kolkata')
+            one_day_ago = datetime.now(indian_tz) - timedelta(days=1)
+            existing_product = db.query(Product).filter(
+                Product.productUrl == productUrl, 
+                Product.timestamp >= one_day_ago
+            ).first()
+            
+            if existing_product:
+                print(f"Product already exists in database (within 1 day) - Page ID: {existing_product.shortCode}")
+                result = get_details_product(existing_product.shortCode)
+                if updater == "true":
+                    return jsonify({"pageid": existing_product.shortCode}), 200
+                if use_job == "true":
+                    return jsonify({"pageid": existing_product.shortCode}), 200
+                return jsonify(result), 200
+            
+            # Check for duplicate jobs before creating a new one
+            existing_job = job_queue_manager.check_duplicate_job(productUrl)
+            if existing_job:
+                return jsonify({
+                    "job_id": existing_job.job_id,
+                    "status": existing_job.status,
+                    "message": "A job for this URL is already pending, queued, or processing",
+                    "duplicate": True,
+                    "queue_position": job_queue_manager.get_queue_status()["queue_size"]
+                }), 409  # Conflict status code
+            
+            # Product doesn't exist, create a new job
             job_id = str(uuid.uuid4())
             job = Job(
                 job_id=job_id,
@@ -307,27 +401,33 @@ def api():
             db.add(job)
             db.commit()
             
-            # Add job to queue for processing
-            job_queue_manager.add_job(job_id, productUrl)
+            # Add job to queue (no need for deduplication check here since we already checked)
+            add_result = job_queue_manager.add_job_simple(job_id, productUrl)
             
-            return jsonify({
-                "job_id": job_id,
-                "status": "pending",
-                "message": "Job created successfully. Use /status/{job_id} to check progress.",
-                "queue_position": job_queue_manager.get_queue_status()["queue_size"]
-            }), 202
-        
-        # Fallback to synchronous processing
-        result, pageId = product_details_api(productUrl)
-        if isinstance(result, str):
-            try:
-                result = clean_unicode_text(json.loads(result))
-            except json.JSONDecodeError:
-                pass
-        
-        if updater == "true":
-            return jsonify({"pageid": pageId}), 200
-        return jsonify(result), 200
+            if add_result["success"]:
+                return jsonify({
+                    "job_id": job_id,
+                    "status": "pending",
+                    "message": "Job created successfully. Use /status/{job_id} to check progress.",
+                    "queue_position": add_result["queue_position"]
+                }), 202
+            else:
+                return jsonify({
+                    "error": add_result["message"],
+                    "queue_status": job_queue_manager.get_queue_status()
+                }), 503  # Service unavailable
+        else:
+            # Synchronous processing (for backward compatibility)
+            result, pageId = product_details_api(productUrl)
+            if isinstance(result, str):
+                try:
+                    result = clean_unicode_text(json.loads(result))
+                except json.JSONDecodeError:
+                    pass
+            
+            if updater == "true":
+                return jsonify({"pageid": pageId}), 200
+            return jsonify(result), 200
         
     finally:
         db.close()
@@ -350,7 +450,6 @@ def get_job_status(job_id):
                 "completed_at": job.completed_at.isoformat() if job.completed_at else None
             }
             
-            # Add queue information for pending/queued jobs
             if job.status in [JobStatus.PENDING.value, JobStatus.QUEUED.value]:
                 queue_status = job_queue_manager.get_queue_status()
                 response_data["queue_info"] = {
@@ -460,17 +559,13 @@ def get_queue_status():
 def clear_queue():
     """Clear all pending jobs from the queue"""
     try:
-        # Note: This is a simple implementation. In production, you might want to 
-        # mark jobs as cancelled in the database instead of just clearing the queue
         with job_queue_manager.job_lock:
-            # Clear the queue
             while not job_queue_manager.job_queue.empty():
                 try:
                     job_queue_manager.job_queue.get_nowait()
                 except queue.Empty:
                     break
             
-            # Update all pending/queued jobs in database to cancelled
             db = SessionLocal()
             try:
                 db.query(Job).filter(
@@ -502,28 +597,124 @@ def resume_queue():
     except Exception as e:
         return jsonify({"error": f"Failed to resume queue: {str(e)}"}), 500
 
-@app.route("/<path:url>", methods=["GET"]) 
-def root(url):
-    if not url:
-        return jsonify({"error": "Missing required parameter 'url'"}), 400
-    result = product_details_api(url)
-    if isinstance(result, str):
+@app.route("/job/start", methods=["POST"])
+def start_job():
+    """Start a job and check if product exists first"""
+    try:
+        data = request.get_json()
+        if not data or 'product_url' not in data:
+            return jsonify({"error": "Missing required parameter 'product_url'"}), 400
+        
+        product_url = data['product_url']
+        
+        db = SessionLocal()
         try:
-            result = clean_unicode_text(json.loads(result))
-        except json.JSONDecodeError:
-            pass
-    return jsonify(result), 200
+            # Check if product already exists within the last day
+            indian_tz = pytz.timezone('Asia/Kolkata')
+            one_day_ago = datetime.now(indian_tz) - timedelta(days=1)
+            existing_product = db.query(Product).filter(
+                Product.productUrl == product_url, 
+                Product.timestamp >= one_day_ago
+            ).first()
+            
+            if existing_product:
+                print(f"Product already exists in database (within 1 day) - Page ID: {existing_product.shortCode}")
+                return jsonify({
+                    "exists": True,
+                    "page_id": existing_product.shortCode,
+                    "message": "Product already exists in database"
+                }), 200
+            
+            # Check for duplicate jobs before creating a new one
+            existing_job = job_queue_manager.check_duplicate_job(product_url)
+            if existing_job:
+                return jsonify({
+                    "exists": False,
+                    "job_id": existing_job.job_id,
+                    "status": existing_job.status,
+                    "message": "A job for this URL is already pending, queued, or processing",
+                    "duplicate": True,
+                    "queue_position": job_queue_manager.get_queue_status()["queue_size"]
+                }), 409
+            
+            # Product doesn't exist, create a new job
+            job_id = str(uuid.uuid4())
+            job = Job(
+                job_id=job_id,
+                product_url=product_url,
+                status=JobStatus.PENDING.value
+            )
+            db.add(job)
+            db.commit()
+            
+            # Add job to queue for processing (no deduplication check needed)
+            add_result = job_queue_manager.add_job_simple(job_id, product_url)
+            
+            if add_result["success"]:
+                return jsonify({
+                    "exists": False,
+                    "job_id": job_id,
+                    "status": "pending",
+                    "message": "Product not found. Job created and queued for processing.",
+                    "queue_position": add_result["queue_position"]
+                }), 202
+            else:
+                return jsonify({
+                    "exists": False,
+                    "error": add_result["message"],
+                    "queue_status": job_queue_manager.get_queue_status()
+                }), 503  # Service unavailable
+            
+        finally:
+            db.close()
+    except Exception as e:
+        return jsonify({"error": f"Failed to start job: {str(e)}"}), 500
+
+# @app.route("/<path:url>", methods=["GET"]) 
+# def root(url):
+#     if not url:
+#         return jsonify({"error": "Missing required parameter 'url'"}), 400
+#     result, pageId = product_details_api(url)
+#     if isinstance(result, str):
+#         try:
+#             result = clean_unicode_text(json.loads(result))
+#         except json.JSONDecodeError:
+#             pass
+#     return jsonify(result), 200
 
 if __name__ == "__main__":
-    # Initialize database tables
+    import sys
     from model import init_db
     init_db()
     
-    # Start the job queue manager
-    job_queue_manager.start()
-    
-    try:
-        app.run(host="0.0.0.0", port=9999, debug=True)
-    finally:
-        # Stop the job queue manager when the app shuts down
-        job_queue_manager.stop()
+    # Check if URL is provided as command line argument
+    if len(sys.argv) > 1:
+        url = sys.argv[1]
+        print(f"Processing single URL: {url}")
+        
+        # Process the URL directly
+        result, page_id = product_details_api(url)
+        if isinstance(result, str):
+            try:
+                result = clean_unicode_text(json.loads(result))
+            except json.JSONDecodeError:
+                pass
+        
+        # Send webhook notification for direct execution
+        if page_id:
+            print(f"📤 Sending webhook notification for pageId: {page_id}")
+            webhook_success = send_completion_webhook(page_id, url)
+            if webhook_success:
+                print(f"✅ Webhook sent successfully")
+            else:
+                print(f"❌ Webhook failed to send")
+        
+        print(f"Result: {json.dumps(result, indent=2)}")
+        print(f"Page ID: {page_id}")
+    else:
+        job_queue_manager.start()
+        
+        try:
+            app.run(host="0.0.0.0", port=9999, debug=True)
+        finally:
+            job_queue_manager.stop()

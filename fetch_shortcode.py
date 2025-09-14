@@ -68,33 +68,36 @@ def get_shortcode(url):
         
         print(f"🔄 Waiting for redirect to product-details...")
         redirect_start = datetime.now()
-        redirect_attempts = 0
-        last_url = ""
-        stuck_count = 0
+        redirect_attempts = 0        
+        max_attempts = 500  # Limit to 500 attempts
         
-        while True:
-            redirect_attempts += 1
+        while redirect_attempts < max_attempts:
             current_url = page.url
             
             # Only print every 5 attempts to reduce log spam, but always print on first few attempts
             if redirect_attempts <= 5 or redirect_attempts % 10 == 0:
                 print(f"🔄 Attempt {redirect_attempts}: Current URL: {current_url}")
             
+            if "fallback" in current_url:
+                print(f"❌ No 'details' found in product_url: {current_url}")
+                pageId = None
+                return(pageId)
+
             # Check for different possible redirect patterns
             if "product-details" in current_url:
                 product_url = current_url
                 redirect_duration = (datetime.now() - redirect_start).total_seconds()
                 print(f"✅ Found product-details URL in {redirect_duration:.2f} seconds: {product_url}")
                 break
-            
-            # Check if URL is changing (not stuck)
-            if current_url != last_url:
-                last_url = current_url
-                stuck_count = 0
-            else:
-                stuck_count += 1
-            
-            sleep(1)
+            page.wait_for_timeout(500)
+            redirect_attempts += 1
+        
+        # If we exit the loop without finding product-details, handle timeout
+        if redirect_attempts >= max_attempts:
+            print(f"⏰ Timeout reached after {max_attempts} attempts, current URL: {page.url}")
+            pageId = None
+            return(pageId)
+
         
         print(f"🧹 Closing browser context and browser...")
         context.close()
