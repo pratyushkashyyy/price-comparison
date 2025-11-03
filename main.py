@@ -14,22 +14,57 @@ from enum import Enum
 
 app = Flask(__name__)
 
-def send_completion_webhook(page_id, product_url):
-    """Send webhook notification when a job is completed"""
+def send_completion_webhook(page_id, product_url, max_retries=3):
+    """Send webhook notification when a job is completed with retry logic"""
     webhook_url = "https://appdeals.in/webhook/flash-data"
     payload = {
         "pageId": page_id,
         "productUrl": product_url
     }
     
-    try:
-        response = requests.post(webhook_url, json=payload, timeout=10)
-        response.raise_for_status()
-        print(f"✅ Webhook sent successfully for pageId: {page_id}")
-        return True
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Failed to send webhook for pageId {page_id}: {e}")
-        return False
+    print(f"📤 Attempting to send webhook for pageId: {page_id}, productUrl: {product_url}")
+    
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"🔄 Webhook retry attempt {attempt + 1}/{max_retries}")
+                sleep(2 ** attempt)  # Exponential backoff: 2, 4, 8 seconds
+            
+            response = requests.post(webhook_url, json=payload, timeout=30)
+            print(f"📡 Webhook response status: {response.status_code}")
+            print(f"📡 Webhook response content: {response.text}")
+            
+            response.raise_for_status()
+            print(f"✅ Webhook sent successfully for pageId: {page_id} (attempt {attempt + 1})")
+            return True
+            
+        except requests.exceptions.Timeout as e:
+            print(f"⏰ Webhook timeout for pageId {page_id} (attempt {attempt + 1}): {e}")
+            if attempt == max_retries - 1:
+                return False
+        except requests.exceptions.ConnectionError as e:
+            print(f"🔌 Webhook connection error for pageId {page_id} (attempt {attempt + 1}): {e}")
+            if attempt == max_retries - 1:
+                return False
+        except requests.exceptions.HTTPError as e:
+            print(f"🚫 Webhook HTTP error for pageId {page_id} (attempt {attempt + 1}): {e}")
+            print(f"🚫 Response status: {response.status_code if 'response' in locals() else 'N/A'}")
+            print(f"🚫 Response content: {response.text if 'response' in locals() else 'N/A'}")
+            # Don't retry on HTTP errors (4xx, 5xx) as they're likely permanent
+            return False
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Webhook request error for pageId {page_id} (attempt {attempt + 1}): {e}")
+            if attempt == max_retries - 1:
+                return False
+        except Exception as e:
+            print(f"💥 Unexpected webhook error for pageId {page_id} (attempt {attempt + 1}): {e}")
+            import traceback
+            print(f"💥 Full traceback:\n{traceback.format_exc()}")
+            if attempt == max_retries - 1:
+                return False
+    
+    print(f"❌ All webhook attempts failed for pageId: {page_id}")
+    return False
 
 class JobStatus(Enum):
     PENDING = "pending"
@@ -40,7 +75,7 @@ class JobStatus(Enum):
 
 
 class JobQueueManager:
-    def __init__(self, max_concurrent_jobs=1, max_queue_size=100):
+    def __init__(self, max_concurrent_jobs=1, max_queue_size=1000):
         self.max_concurrent_jobs = max_concurrent_jobs
         self.max_queue_size = max_queue_size
         self.job_queue = queue.Queue(maxsize=max_queue_size)
@@ -200,7 +235,9 @@ class JobQueueManager:
                 db.commit()
                 
                 # Send webhook notification
-                send_completion_webhook(page_id, product_url)
+                webhook_success = send_completion_webhook(page_id, product_url)
+                if not webhook_success:
+                    print(f"⚠️ Webhook failed for existing product, but job completed successfully")
                 
                 end_time = datetime.now()
                 duration = (end_time - start_time).total_seconds()
@@ -222,7 +259,9 @@ class JobQueueManager:
             db.commit()
             
             # Send webhook notification
-            send_completion_webhook(page_id, product_url)
+            webhook_success = send_completion_webhook(page_id, product_url)
+            if not webhook_success:
+                print(f"⚠️ Webhook failed for new product, but job completed successfully")
             
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
@@ -279,6 +318,11 @@ def product_details_api(product_url):
         print(f"📱 get_shortcode completed in {shortcode_duration:.2f} seconds")
         print(f"📱 Page ID: {pageId}")
         
+        # If no pageId was found, return error immediately
+        if pageId is None:
+            print(f"❌ No pageId extracted from URL: {product_url}")
+            return {'error': f'Could not extract pageId from URL. The URL might not be a valid product URL or Flash.co could not process it.'}, None
+        
         try:
             print(f"🔍 Checking readiness for product {pageId}")
             readiness_start = datetime.now()
@@ -290,6 +334,12 @@ def product_details_api(product_url):
                 percentage = 100
                 print(f"🔍 No product detail steps found, setting percentage to 100%")
             else:
+                # Ensure percentage is numeric
+                try:
+                    percentage = int(percentage) if isinstance(percentage, str) else percentage
+                except (ValueError, TypeError):
+                    percentage = 0
+                
                 wait_count = 0
                 while percentage < 90:
                     wait_count += 1
@@ -297,6 +347,13 @@ def product_details_api(product_url):
                     readiness_start = datetime.now()
                     percentage = ready_check(pageId)
                     readiness_duration = (datetime.now() - readiness_start).total_seconds()
+                    
+                    # Ensure percentage is numeric
+                    try:
+                        percentage = int(percentage) if isinstance(percentage, str) else percentage
+                    except (ValueError, TypeError):
+                        percentage = 0
+                    
                     print(f"⏳ Readiness check {wait_count} completed in {readiness_duration:.2f} seconds: {percentage}%")
                     sleep(1)
                     
@@ -305,44 +362,40 @@ def product_details_api(product_url):
                         break
         except Exception as e:
                 print(f"❌ Error during readiness check: {e}")
-                return {'error': f'Failed to check readiness attempts: {str(e)}'}
-        if pageId:
-            print(f"📊 Processing product with pageId: {pageId}")
-            product_details = get_details_product(pageId)
+                return {'error': f'Failed to check readiness attempts: {str(e)}'}, None
+        print(f"📊 Processing product with pageId: {pageId}")
+        product_details = get_details_product(pageId)
+        try:
+            short_code = pageId
+            db = SessionLocal()
             try:
-                short_code = pageId
-                db = SessionLocal()
-                try:
-                    indian_tz = pytz.timezone('Asia/Kolkata')
-                    timestamp = datetime.now(indian_tz)
-                    
-                    existing_product = db.query(Product).filter(Product.productUrl == product_url).first()
-                    if existing_product:
-                        existing_product.shortCode = short_code
-                        existing_product.timestamp = timestamp
-                        db.commit()
-                        print(f"Product updated: ID={existing_product.id}, Code={short_code}")
-                    else:
-                        product = Product(
-                            productUrl=product_url,
-                            shortCode=short_code,
-                            timestamp=timestamp
-                        )
-                        db.add(product)
-                        db.commit()
-                        db.refresh(product)
-                        print(f"New product stored in database: ID={product.id}, Code={short_code}")
-                except Exception as e:
-                    db.rollback()
-                    print(f"❌ Database storage failed: {e}")
-                finally:
-                    db.close()       
+                indian_tz = pytz.timezone('Asia/Kolkata')
+                timestamp = datetime.now(indian_tz)
+                
+                existing_product = db.query(Product).filter(Product.productUrl == product_url).first()
+                if existing_product:
+                    existing_product.shortCode = short_code
+                    existing_product.timestamp = timestamp
+                    db.commit()
+                    print(f"Product updated: ID={existing_product.id}, Code={short_code}")
+                else:
+                    product = Product(
+                        productUrl=product_url,
+                        shortCode=short_code,
+                        timestamp=timestamp
+                    )
+                    db.add(product)
+                    db.commit()
+                    db.refresh(product)
+                    print(f"New product stored in database: ID={product.id}, Code={short_code}")
             except Exception as e:
-                    print(f"❌ Database operation failed: {e}")
-            return product_details, pageId
-        else:
-            print(f"❌ No pageId extracted from URL: {product_url}")
-            return {'error': f'Could not extract pageId from URL. The URL might not be a valid product URL or Flash.co could not process it.'}, None
+                db.rollback()
+                print(f"❌ Database storage failed: {e}")
+            finally:
+                db.close()       
+        except Exception as e:
+                print(f"❌ Database operation failed: {e}")
+        return product_details, pageId
 
 @app.route("/view", methods=["GET"]) 
 def view():
@@ -374,6 +427,12 @@ def api():
             if existing_product:
                 print(f"Product already exists in database (within 1 day) - Page ID: {existing_product.shortCode}")
                 result = get_details_product(existing_product.shortCode)
+                
+                # Send webhook notification for existing product
+                webhook_success = send_completion_webhook(existing_product.shortCode, productUrl)
+                if not webhook_success:
+                    print(f"⚠️ Webhook failed for existing product in /api endpoint")
+                
                 if updater == "true":
                     return jsonify({"pageid": existing_product.shortCode}), 200
                 if use_job == "true":
@@ -391,7 +450,6 @@ def api():
                     "queue_position": job_queue_manager.get_queue_status()["queue_size"]
                 }), 409  # Conflict status code
             
-            # Product doesn't exist, create a new job
             job_id = str(uuid.uuid4())
             job = Job(
                 job_id=job_id,
@@ -597,6 +655,30 @@ def resume_queue():
     except Exception as e:
         return jsonify({"error": f"Failed to resume queue: {str(e)}"}), 500
 
+@app.route("/webhook/test", methods=["POST"])
+def test_webhook():
+    """Test webhook functionality"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+        
+        page_id = data.get("pageId", "test_page_id")
+        product_url = data.get("productUrl", "https://example.com/test")
+        
+        print(f"🧪 Testing webhook with pageId: {page_id}, productUrl: {product_url}")
+        success = send_completion_webhook(page_id, product_url)
+        
+        return jsonify({
+            "success": success,
+            "pageId": page_id,
+            "productUrl": product_url,
+            "message": "Webhook test completed"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": f"Webhook test failed: {str(e)}"}), 500
+
 @app.route("/job/start", methods=["POST"])
 def start_job():
     """Start a job and check if product exists first"""
@@ -619,6 +701,12 @@ def start_job():
             
             if existing_product:
                 print(f"Product already exists in database (within 1 day) - Page ID: {existing_product.shortCode}")
+                
+                # Send webhook notification for existing product
+                webhook_success = send_completion_webhook(existing_product.shortCode, product_url)
+                if not webhook_success:
+                    print(f"⚠️ Webhook failed for existing product in /job/start endpoint")
+                
                 return jsonify({
                     "exists": True,
                     "page_id": existing_product.shortCode,
@@ -709,7 +797,6 @@ if __name__ == "__main__":
             else:
                 print(f"❌ Webhook failed to send")
         
-        print(f"Result: {json.dumps(result, indent=2)}")
         print(f"Page ID: {page_id}")
     else:
         job_queue_manager.start()

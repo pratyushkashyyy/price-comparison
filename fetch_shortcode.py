@@ -59,7 +59,10 @@ def get_shortcode(url):
         print(f"📄 Creating new page...")
         page = context.new_page()
         
-        target_url = f"https://flash.co/{url}"
+        # URL encode the entire URL to handle query parameters properly
+        import urllib.parse
+        encoded_url = urllib.parse.quote(url, safe='')
+        target_url = f"https://flash.co/{encoded_url}"
         print(f"🌐 Navigating to: {target_url}")
         navigation_start = datetime.now()
         page.goto(target_url)
@@ -106,16 +109,23 @@ def get_shortcode(url):
         # Initialize pageId to None
         pageId = None
         
-        if "details" in product_url:
+        if "product-details" in product_url:
             final_url = product_url
             if 'pageId=' in final_url:
                 pageId = final_url.split('pageId=')[-1]
-                print(f"📱 Extracted pageId: {pageId}")
+                print(f"📱 Extracted pageId from pageId parameter: {pageId}")
             else:
-                print(f"❌ No pageId found in URL: {final_url}")
-                pageId = None
+                # Try to extract pageId from the URL path (e.g., /product-details/1VItfFCF/...)
+                import re
+                match = re.search(r'/product-details/([^/]+)', final_url)
+                if match:
+                    pageId = match.group(1)
+                    print(f"📱 Extracted pageId from URL path: {pageId}")
+                else:
+                    print(f"❌ No pageId found in URL: {final_url}")
+                    pageId = None
         else:
-            print(f"❌ No 'details' found in product_url: {product_url}")
+            print(f"❌ No 'product-details' found in product_url: {product_url}")
             pageId = None
 
         total_duration = (datetime.now() - start_time).total_seconds()
