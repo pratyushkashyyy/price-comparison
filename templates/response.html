@@ -140,6 +140,7 @@
 
       const apiUrl = new URL(window.location.origin + '/api');
       if (productUrl) apiUrl.searchParams.set('url', productUrl);
+      apiUrl.searchParams.set('job', 'false');
 
       function pretty(obj) {
         try { return JSON.stringify(obj, null, 2); } catch { return String(obj); }
@@ -350,5 +351,4 @@
     </script>
   </body>
   </html>
-
 

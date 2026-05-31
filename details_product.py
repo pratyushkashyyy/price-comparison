@@ -40,7 +40,7 @@ def get_details_product(pageId):
         'pageId': pageId,
     }
 
-    response = requests.get('https://webapp.flash.co/product-details', params=params, cookies=cookies, headers=headers)
+    response = requests.get('https://webapp.flash.co/product-details', params=params, cookies=cookies, headers=headers, timeout=180)
     data = response.text
     patterns_to_try = [
         r'self\.__next_f\.push\(\[1,"5:(.*?)"\]\)',

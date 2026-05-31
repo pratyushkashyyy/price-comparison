@@ -16,6 +16,10 @@ app = Flask(__name__)
 
 def send_completion_webhook(page_id, product_url, max_retries=3):
     """Send webhook notification when a job is completed with retry logic"""
+    if not page_id:
+        print(f"⚠️ Skipping webhook for productUrl: {product_url} because pageId is missing")
+        return False
+
     webhook_url = "https://appdeals.in/webhook/flash-data"
     payload = {
         "pageId": page_id,
@@ -251,6 +255,15 @@ class JobQueueManager:
             
             print(f"🔄 Calling product_details_api for {product_url}")
             result, page_id = product_details_api(product_url)
+
+            if not page_id:
+                job.status = JobStatus.FAILED.value
+                job.result = result
+                job.error = result.get("error") if isinstance(result, dict) else "No pageId found"
+                job.completed_at = datetime.now(pytz.timezone('Asia/Kolkata'))
+                db.commit()
+                print(f"❌ Job {job_id} failed because no pageId was found. Webhook skipped.")
+                return
             
             job.status = JobStatus.COMPLETED.value
             job.result = result
